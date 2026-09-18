@@ -1,0 +1,61 @@
+/**
+ * JTerra enquiry portal: Google Sheets backend.
+ * Paste this into Extensions > Apps Script inside the Google Sheet that should hold the enquiries.
+ * Deploy > New deployment > Web app > Execute as: Me > Who has access: Anyone.
+ */
+var SHEET_NAME   = 'Enquiries';
+var NOTIFY_EMAIL = '';   // optional: an address to email each time an enquiry arrives. Leave '' to switch off.
+
+var FIELDS = ['submittedAt','id','firstName','lastName','email','phone','contactMethod','services','buyerType',
+              'suburb1','suburb2','budget','preApproval','timeframe','message','source','updates','page'];
+var HEADERS = ['Received','Reference','First name','Last name','Email','Phone','Preferred contact','Interested in','Buyer type',
+               'Suburb 1','Suburb 2','Budget','Pre-approval','Timeframe','Message','Heard via','Wants updates','Page'];
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    var data = JSON.parse(e.postData.contents || '{}');
+
+    // Honeypot: real visitors never fill this field. Pretend success so bots move on.
+    if (data.website) return reply({ ok: true });
+    if (!data.email && !data.phone) return reply({ ok: false, error: 'contact_required' });
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow(HEADERS);
+      sheet.setFrozenRows(1);
+      sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
+    }
+
+    var row = FIELDS.map(function (f) {
+      if (f === 'submittedAt') return new Date();
+      return clean(data[f]);
+    });
+    sheet.appendRow(row);
+
+    if (NOTIFY_EMAIL) {
+      var name = [data.firstName, data.lastName].filter(String).join(' ') || 'No name given';
+      var body = FIELDS.map(function (f, i) { return HEADERS[i] + ': ' + (f === 'submittedAt' ? new Date() : (data[f] || '')); }).join('\n');
+      MailApp.sendEmail(NOTIFY_EMAIL, 'New JTerra enquiry: ' + name, body);
+    }
+    return reply({ ok: true });
+  } catch (err) {
+    return reply({ ok: false, error: String(err) });
+  } finally {
+    try { lock.releaseLock(); } catch (x) {}
+  }
+}
+
+function doGet() { return reply({ ok: true, service: 'jterra-enquiries' }); }
+
+// Limit length and stop values being read as spreadsheet formulas.
+function clean(v) {
+  var s = String(v == null ? '' : v).slice(0, 5000);
+  return /^[=+\-@]/.test(s) ? "'" + s : s;
+}
+
+function reply(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
